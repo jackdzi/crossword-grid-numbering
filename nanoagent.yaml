@@ -1,0 +1,37 @@
+_ > nanoagent.plugin.v0001.ManifestConfig:
+id: crossword-grid-numbering
+name: Crossword Grid Numbering
+version: 0.1.0
+status: ready
+spec: nanoagent.plugin/v0001
+
+runtime > nanoagent.plugin.v0001.RuntimeConfig:
+  type: mcp_stdio
+  command: [uv, run, --frozen, python, -m, plugin]
+
+permissions > nanoagent.plugin.v0001.PermissionsConfig:
+  network > nanoagent.plugin.v0001.NetworkConfig:
+    hosts: []
+  filesystem > nanoagent.plugin.v0001.FilesystemConfig:
+    write: [workspace]
+
+# One entry per contract.Tool; its input and output classes are contract.TOOLS's.
+tools > dict[contract.Tool, nanoagent.plugin.v0001.ToolConfig]:
+  get_grid:
+    description: Get the task's crossword grid, as its rows and its columns, with '.' for white cells and '#' for black ones
+  save_entries:
+    description: Save every across or every down entry of the numbering into the workspace, replacing that direction's earlier save, and return all entries saved so far
+  pin_numbering:
+    description: Pin the grid and its correct numbering, the task's answer key
+
+# One entry per contract.Task; its input class is contract.TASKS's.
+tasks > dict[contract.Task, nanoagent.plugin.v0001.TaskConfig]:
+  number-grid:
+    description: Number a crossword grid's across and down entries by the standard rule, and save them
+    runner: agent
+    tools: [get_grid, save_entries]
+    reference: pin_numbering
+    instructions: |-
+      Rules. Rows and columns count from 0 at the top left. An across entry is a run of 2 or more white cells left to right, bounded by a black cell or the grid's edge on both sides; a down entry is the same top to bottom. A single white cell between black cells is no entry. Read the grid row by row, left to right: each white cell that starts an across entry or a down entry (or both) gets the next number, starting at 1. A cell that starts both an across and a down entry has one number, used by both entries. An entry's length is how many white cells it spans.
+      Plan. Exactly four tool calls: (1) get_grid with the task input copied exactly; (2) save_entries with direction across and every across entry; (3) save_entries with direction down and every down entry; (4) submit with the entries the last save_entries call returned, unchanged.
+      Method. Find the start cells first: a white cell starts an across entry when the cell to its left is black or off the grid and the cell to its right is white; it starts a down entry when the cell above is black or off the grid and the cell below is white. Number the start cells in reading order, then measure each entry's length along its row (across) or column (down): the columns list gives each column top to bottom. Keep your reasoning short: one line per row.

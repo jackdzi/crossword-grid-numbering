@@ -1,0 +1,11 @@
+_ > nanoagent.plugin.v0001.ProductConfig:
+tagline: "Number any crossword grid by the standard rule, checked entry by entry"
+summary: "Pick a grid size and a seed and the agent numbers the crossword: every across and down entry with its clue number, first cell and length. Grids range from 5x5 to 11x11, free or with the usual rotational symmetry, and include awkward ones with no black squares or a fully black row. A deterministic checker renumbers the grid its own way and lists every entry that is missing, extra or wrong."
+highlights:
+  - "Any seed gives a fresh grid that anyone can rebuild exactly"
+  - "Lone white cells, black rows and edge runs are all handled by the rule"
+  - "Every entry is checked, and the saved file must match what was submitted"
+steps:
+  - "Ask for a grid size, a seed and whether the grid should be symmetric"
+  - "The agent reads the grid, saves the across entries, then the down entries"
+  - "See the numbering and the verdict, with each wrong entry named by its cell"

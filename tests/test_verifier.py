@@ -6,33 +6,29 @@ import json
 from pathlib import Path
 
 import pytest
-from helpers import as_sandbox, gold_run, task
+from helpers import as_sandbox, gold_run, save, task
 from slimconfig import build_output, plain_output
 
 import verifier
-from contract import NumberingOutput, SaveInput
-from plugin.grid import grid_rows, save_path
+from contract import GridOutput, NumberingOutput, NumbersInput, NumbersOutput
+from plugin import get_grid
+from plugin.grid import grid_rows, save_path, white_runs
 
 TASK = "number-grid"
 
 
-def entries_of(output: NumberingOutput) -> list[dict]:
-    return [plain_output(e) for e in output.entries]
-
-
-def resubmit(given, entries: list[dict], workspace: Path, *, save: bool = True) -> dict:
-    """Submit ``entries`` (saving them first, as the agent would) and return the verdict."""
-    if save:
-        path = workspace / save_path(given)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "task": plain_output(given),
-            "across": [e for e in entries if e["direction"] == "across"],
-            "down": [e for e in entries if e["direction"] == "down"],
-        }
-        path.write_text(json.dumps(data))
+def resubmit(given, numbers: list[int], workspace: Path, *, saved: list[int] | None = None) -> dict:
+    """Submit ``numbers`` after writing ``saved`` (by default the same numbers) as the saved file."""
+    stored = numbers if saved is None else saved
+    path = workspace / save_path(given)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task": plain_output(given), "numbers": stored, "entries": []}))
     _, reference = gold_run(given, workspace / "scratch")
-    return verifier.verify_task(TASK, given, as_sandbox({"entries": entries}, NumberingOutput), reference, str(workspace))
+    return verifier.verify_task(TASK, given, as_sandbox({"numbers": numbers}, NumberingOutput), reference, str(workspace))
+
+
+def gold_numbers(given, workspace: Path) -> list[int]:
+    return list(gold_run(given, workspace / "gold")[0].numbers)
 
 
 def test_accepts_a_correct_numbering(tmp_path: Path) -> None:
@@ -44,90 +40,91 @@ def test_accepts_a_correct_numbering(tmp_path: Path) -> None:
 
 def test_rejects_a_wrong_number(tmp_path: Path) -> None:
     given = task()
-    output, _ = gold_run(given, tmp_path / "gold")
-    entries = entries_of(output)
-    entries[-1]["number"] += 1
-    verdict = resubmit(given, entries, tmp_path)
-    assert verdict["valid"] is False and verdict["details"]["wrong_number"]
-    assert 0 < verdict["score"] < 1
+    numbers = gold_numbers(given, tmp_path)
+    last = max(range(len(numbers)), key=lambda i: numbers[i])
+    numbers[last] += 1
+    verdict = resubmit(given, numbers, tmp_path)
+    assert verdict["valid"] is False and verdict["details"]["wrong"] and 0 < verdict["score"] < 1
 
 
-def test_rejects_a_wrong_length(tmp_path: Path) -> None:
-    given = task()
-    output, _ = gold_run(given, tmp_path / "gold")
-    entries = entries_of(output)
-    entries[0]["length"] += 1
-    verdict = resubmit(given, entries, tmp_path)
-    assert verdict["valid"] is False and verdict["details"]["wrong_length"]
+def test_rejects_a_numbering_that_slips_by_one(tmp_path: Path) -> None:
+    # Missing one entry shifts every later number: the verifier names each run it shifts.
+    given = task(seed=2026, size="11x11", symmetric=False)
+    numbers = gold_numbers(given, tmp_path)
+    first = next(i for i, n in enumerate(numbers) if n > 1)
+    shifted = numbers[:first] + [n - 1 if n else 0 for n in numbers[first:]]
+    verdict = resubmit(given, shifted, tmp_path)
+    assert verdict["valid"] is False and len(verdict["details"]["wrong"]) > 5
 
 
-def test_rejects_a_missing_entry(tmp_path: Path) -> None:
-    given = task()
-    output, _ = gold_run(given, tmp_path / "gold")
-    verdict = resubmit(given, entries_of(output)[1:], tmp_path)
-    assert verdict["valid"] is False and verdict["details"]["missing"]
-
-
-def test_rejects_a_length_one_run_counted_as_an_entry(tmp_path: Path) -> None:
-    # This grid has a lone white cell between black cells; claim it as a length-1 entry.
+def test_rejects_a_single_cell_numbered_as_an_entry(tmp_path: Path) -> None:
     given = task(seed=11, size="7x7", symmetric=False)
-    rows = grid_rows(given)
-    output, _ = gold_run(given, tmp_path / "gold")
-    entries = entries_of(output)
-    lone = next(
-        (r, c)
-        for r in range(len(rows))
-        for c in range(len(rows))
-        if rows[r][c] == "." and (c == 0 or rows[r][c - 1] == "#") and (c == len(rows) - 1 or rows[r][c + 1] == "#")
-    )
-    entries.append({"number": 99, "direction": "across", "row": lone[0], "col": lone[1], "length": 1})
-    verdict = resubmit(given, entries, tmp_path)
-    assert verdict["valid"] is False and verdict["details"]["extra"]
+    numbers = gold_numbers(given, tmp_path)
+    runs = white_runs(grid_rows(given))
+    single = next(i for i, run in enumerate(runs) if run.length == 1)
+    numbers[single] = 99
+    verdict = resubmit(given, numbers, tmp_path)
+    assert verdict["valid"] is False and "expected 0" in verdict["message"]
 
 
-def test_rejects_an_entry_given_twice(tmp_path: Path) -> None:
+def test_rejects_an_entry_numbered_as_a_single_cell(tmp_path: Path) -> None:
     given = task()
-    output, _ = gold_run(given, tmp_path / "gold")
-    entries = entries_of(output)
-    verdict = resubmit(given, entries + entries[:1], tmp_path)
-    assert verdict["valid"] is False and verdict["details"]["given_twice"]
+    numbers = gold_numbers(given, tmp_path)
+    numbers[numbers.index(1)] = 0
+    assert resubmit(given, numbers, tmp_path)["valid"] is False
+
+
+def test_rejects_too_few_or_too_many_numbers(tmp_path: Path) -> None:
+    given = task()
+    numbers = gold_numbers(given, tmp_path)
+    for wrong in (numbers[:-1], numbers + [0]):
+        verdict = resubmit(given, wrong, tmp_path)
+        assert verdict["valid"] is False and "runs" in verdict["message"]
 
 
 def test_rejects_an_empty_submission(tmp_path: Path) -> None:
-    given = task()
-    verdict = resubmit(given, [], tmp_path)
+    verdict = resubmit(task(), [], tmp_path)
     assert verdict["valid"] is False and verdict["score"] == 0.0
 
 
 def test_rejects_a_correct_answer_that_was_never_saved(tmp_path: Path) -> None:
     given = task()
-    output, _ = gold_run(given, tmp_path / "gold")
-    verdict = resubmit(given, entries_of(output), tmp_path, save=False)
-    assert verdict["valid"] is False and "never saved" in verdict["details"]["saved_file"]
-    assert verdict["score"] == 0.5
+    numbers = gold_numbers(given, tmp_path)
+    _, reference = gold_run(given, tmp_path / "scratch")
+    verdict = verifier.verify_task(TASK, given, as_sandbox({"numbers": numbers}, NumberingOutput), reference, str(tmp_path / "empty"))
+    assert verdict["valid"] is False and "never saved" in verdict["details"]["saved_file"] and verdict["score"] == 0.5
 
 
 def test_rejects_a_submission_that_differs_from_the_saved_file(tmp_path: Path) -> None:
     given = task()
-    output, reference = gold_run(given, tmp_path)
-    entries = entries_of(output)
-    entries[0]["number"] += 5
-    verdict = verifier.verify_task(TASK, given, as_sandbox({"entries": entries}, NumberingOutput), reference, str(tmp_path))
-    assert verdict["valid"] is False and "does not hold the submitted entries" in verdict["details"]["saved_file"]
+    numbers = gold_numbers(given, tmp_path)
+    changed = list(numbers)
+    changed[0] = 0 if changed[0] else 1
+    verdict = resubmit(given, numbers, tmp_path, saved=changed)
+    assert verdict["valid"] is False and "does not hold the submitted numbers" in verdict["details"]["saved_file"]
 
 
 def test_rejects_a_tampered_answer_key(tmp_path: Path) -> None:
     given = task()
     output, reference = gold_run(given, tmp_path)
-    reference.entries = reference.entries[1:]
+    reference.numbers = reference.numbers[1:]
     assert verifier.verify_task(TASK, given, output, reference, str(tmp_path))["valid"] is False
+    assert verifier.verify_task(TASK, given, output, None, str(tmp_path))["valid"] is False
 
 
 @pytest.mark.parametrize("seed", range(40))
 @pytest.mark.parametrize("size", ["5x5", "11x11"])
 def test_boundary_grids_are_numbered(tmp_path: Path, seed: int, size: str) -> None:
-    # Over 40 seeds these include grids with no black cell, an all-black row and an all-black column.
+    # Over 40 seeds these include grids with no black cell, an all-black row and an all-black column,
+    # and 11x11 grids that need three batches.
     given = task(seed=seed, size=size, symmetric=seed % 2 == 0)
+    output, reference = gold_run(given, tmp_path)
+    assert verifier.verify_task(TASK, given, output, reference, str(tmp_path))["valid"] is True
+
+
+def test_the_largest_grid_takes_three_batches(tmp_path: Path) -> None:
+    given = task(seed=930, size="11x11", symmetric=True)
+    assert len(white_runs(grid_rows(given))) == 74
     output, reference = gold_run(given, tmp_path)
     assert verifier.verify_task(TASK, given, output, reference, str(tmp_path))["valid"] is True
 
@@ -135,33 +132,27 @@ def test_boundary_grids_are_numbered(tmp_path: Path, seed: int, size: str) -> No
 def test_the_seeds_cover_the_boundary_grids() -> None:
     grids = [grid_rows(task(seed=seed, size="7x7", symmetric=False)) for seed in range(40)]
     assert any("#" not in "".join(rows) for rows in grids), "no grid without black cells"
-    assert any("." * 7 not in rows and "#" * 7 in rows for rows in grids), "no all-black row"
+    assert any("#" * 7 in rows for rows in grids), "no all-black row"
 
 
-def test_input_checks_refuse_malformed_saves() -> None:
+def test_input_checks_refuse_malformed_batches() -> None:
     given = plain_output(task())
-    wrong_direction = build_output(
-        {"task": given, "direction": "across", "entries": [{"number": 1, "direction": "down", "row": 0, "col": 0, "length": 3}]},
-        SaveInput,
-    )
-    outside = build_output(
-        {"task": given, "direction": "across", "entries": [{"number": 1, "direction": "across", "row": 9, "col": 0, "length": 3}]},
-        SaveInput,
-    )
-    too_short = build_output(
-        {"task": given, "direction": "across", "entries": [{"number": 1, "direction": "across", "row": 0, "col": 0, "length": 1}]},
-        SaveInput,
-    )
-    for value in (wrong_direction, outside, too_short):
-        assert verifier.verify_input("save_entries", value)["valid"] is False
+    count = len(white_runs(grid_rows(task())))
+    for bad in ({"start": 0, "numbers": [-1]}, {"start": 0, "numbers": [0] * 26}, {"start": count, "numbers": [0]}, {"start": 0, "numbers": []}):
+        value = build_output({"task": given, **bad}, NumbersInput)
+        assert verifier.verify_input("save_numbers", value)["valid"] is False, bad
     assert verifier.verify_input("get_grid", task(seed=-1))["valid"] is False
 
 
 def test_tool_outputs_are_checked(tmp_path: Path) -> None:
-    from plugin import get_grid
-
     given = task()
-    made = as_sandbox(get_grid(given, tmp_path), type(get_grid(given, tmp_path)))
+    made = as_sandbox(get_grid(given, tmp_path), GridOutput)
     assert verifier.verify_output("get_grid", given, made, str(tmp_path))["valid"] is True
-    made.rows = made.rows[::-1]
+    made.runs = made.runs[1:]
     assert verifier.verify_output("get_grid", given, made, str(tmp_path))["valid"] is False
+    batch = [0] * len(get_grid(given, tmp_path).runs)
+    saved = as_sandbox(save(given, 0, batch, tmp_path), NumbersOutput)
+    value = build_output({"task": plain_output(given), "start": 0, "numbers": batch}, NumbersInput)
+    assert verifier.verify_output("save_numbers", value, saved, str(tmp_path))["valid"] is True
+    saved.next_start += 1
+    assert verifier.verify_output("save_numbers", value, saved, str(tmp_path))["valid"] is False

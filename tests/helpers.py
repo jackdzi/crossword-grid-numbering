@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripted_agent import numbering_from_grid
+from scripted_agent import number_batch
 from slimconfig import build_output, plain_output
 
-from contract import GridInput, NumberingOutput, PinOutput, SaveInput
-from plugin import get_grid, pin_numbering, save_entries
+from contract import GridInput, NumberingOutput, NumbersInput, PinOutput
+from plugin import get_grid, pin_numbering, save_numbers
 
 
 def as_sandbox(value, cls):
@@ -18,12 +18,21 @@ def task(seed: int = 7, size: str = "9x9", symmetric: bool = True) -> GridInput:
     return build_output({"seed": seed, "size": size, "symmetric": symmetric}, GridInput)
 
 
+def save(given: GridInput, start: int, numbers: list[int], workspace: Path):
+    return save_numbers(build_output({"task": plain_output(given), "start": start, "numbers": numbers}, NumbersInput), workspace)
+
+
 def gold_run(given: GridInput, workspace: Path) -> tuple[NumberingOutput, PinOutput]:
-    """A correct run through the real tools: get_grid, two save_entries, and the submitted output."""
-    grid = get_grid(given, workspace)
-    across, down = numbering_from_grid(grid.rows, grid.columns)
-    save_entries(build_output({"task": plain_output(given), "direction": "across", "entries": across}, SaveInput), workspace)
-    saved = save_entries(build_output({"task": plain_output(given), "direction": "down", "entries": down}, SaveInput), workspace)
-    output = as_sandbox({"entries": [plain_output(e) for e in saved.entries]}, NumberingOutput)
+    """A correct run through the real tools: get_grid, a save_numbers per batch, and the submitted output."""
+    grid = plain_output(get_grid(given, workspace))
+    runs, start, last, before = grid["runs"], 0, 0, None
+    while True:
+        numbers, last = number_batch(runs, last, before)
+        saved = plain_output(save(given, start, numbers, workspace))
+        if saved["complete"]:
+            break
+        before = (runs[-1], numbers[-1])
+        runs, start = saved["next_runs"], saved["next_start"]
+    output = as_sandbox({"numbers": saved["numbers"]}, NumberingOutput)
     reference = as_sandbox(pin_numbering(given, workspace), PinOutput)
     return output, reference

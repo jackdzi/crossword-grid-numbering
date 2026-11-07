@@ -12,10 +12,8 @@ import pytest
 from helpers import task
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from slimconfig import build_output, plain_output
 
-from contract import SaveInput
-from plugin import get_grid, pin_numbering, save_entries
+from plugin import get_grid, pin_numbering
 from plugin.grid import grid_rows, number
 from verifier.grid import rebuild_rows, true_entries
 
@@ -66,24 +64,39 @@ def test_the_tool_and_the_verifier_agree_on_2000_grids() -> None:
             assert ours == true_entries(rows), (seed, size)
 
 
-def test_save_entries_merges_directions_and_writes_the_file(tmp_path: Path) -> None:
+def test_save_numbers_saves_batches_in_order(tmp_path: Path) -> None:
+    from helpers import save
+
+    given = task(seed=930, size="11x11", symmetric=True)
+    pinned = pin_numbering(given, tmp_path).numbers
+    first = save(given, 0, pinned[:25], tmp_path)
+    assert (first.next_start, first.complete, len(first.next_runs)) == (25, False, 25)
+    with pytest.raises(ValueError, match="next batch starts at 25"):
+        save(given, 30, pinned[30:55], tmp_path)
+    save(given, 25, pinned[25:50], tmp_path)
+    last = save(given, 50, pinned[50:], tmp_path)
+    assert last.complete and last.numbers == pinned and last.next_runs == []
+    on_disk = json.loads((tmp_path / last.file).read_text())
+    assert on_disk["numbers"] == pinned and len(on_disk["entries"]) == sum(1 for n in pinned if n)
+
+
+def test_a_first_batch_restarts_the_numbering(tmp_path: Path) -> None:
+    from helpers import save
+
     given = task()
-    pinned = pin_numbering(given, tmp_path)
-    for direction in ("across", "down"):
-        entries = [plain_output(e) for e in pinned.entries if e.direction.value == direction]
-        saved = save_entries(build_output({"task": plain_output(given), "direction": direction, "entries": entries}, SaveInput), tmp_path)
-    assert saved.complete and saved.entries == pinned.entries
-    on_disk = json.loads((tmp_path / saved.file).read_text())
-    assert len(on_disk["across"]) == saved.across and len(on_disk["down"]) == saved.down
+    save(given, 0, [0] * len(get_grid(given, tmp_path).runs), tmp_path)
+    again = save(given, 0, [1], tmp_path)
+    assert again.numbers == [1]
 
 
-def test_save_entries_refuses_an_entry_of_the_other_direction(tmp_path: Path) -> None:
-    bad = build_output(
-        {"task": plain_output(task()), "direction": "across", "entries": [{"number": 1, "direction": "down", "row": 0, "col": 0, "length": 2}]},
-        SaveInput,
-    )
-    with pytest.raises(ValueError):
-        save_entries(bad, tmp_path)
+def test_runs_list_every_white_run_in_reading_order() -> None:
+    from plugin.grid import white_runs
+
+    runs = white_runs(["..#", "...", "#.."])
+    assert [(r.direction.value, r.row, r.col, r.length) for r in runs] == [
+        ("across", 0, 0, 2), ("down", 0, 0, 2), ("down", 0, 1, 3),
+        ("across", 1, 0, 3), ("down", 1, 2, 2), ("across", 2, 1, 2),
+    ]
 
 
 def test_get_grid_gives_rows_and_columns(tmp_path: Path) -> None:
@@ -99,7 +112,7 @@ def test_the_mcp_server_lists_and_runs_every_tool(tmp_path: Path) -> None:
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
             names = {tool.name for tool in (await session.list_tools()).tools}
-            assert names == {"get_grid", "save_entries", "pin_numbering"}
+            assert names == {"get_grid", "save_numbers", "pin_numbering"}
             given = {"seed": 1, "size": "5x5", "symmetric": True}
             grid = await session.call_tool("get_grid", given)
             assert not grid.isError and len(grid.structuredContent["rows"]) == 5

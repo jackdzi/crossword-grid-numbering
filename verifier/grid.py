@@ -9,6 +9,7 @@ from .checks import result
 from .rng import Stream, canonical_sha256
 
 MAX_SEED = 1_000_000_000
+BATCH = 25
 
 
 def rebuild_rows(task):
@@ -68,7 +69,7 @@ def true_entries(rows):
 
 
 def keyed(entries):
-    """{(direction, row, col): (number, length)} for submitted entries, plus the keys given twice."""
+    """{(direction, row, col): (number, length)} for entries, plus the keys given twice."""
     table, twice = {}, []
     for e in entries:
         key = (e.direction.value, e.row, e.col)
@@ -78,8 +79,31 @@ def keyed(entries):
     return table, twice
 
 
-def label(key):
-    return f"{key[0]} at row {key[1]}, col {key[2]}"
+def all_runs(rows):
+    """Every maximal white run, single cells included, as (direction, row, col, length), in the order
+    get_grid lists them: by first cell, across before down."""
+    columns = ["".join(row[c] for row in rows) for c in range(len(rows))]
+    found = []
+    for direction, lines in (("across", rows), ("down", columns)):
+        for i, line in enumerate(lines):
+            start = 0
+            for piece in line.split("#"):
+                if piece:
+                    found.append((i, start, direction, len(piece)) if direction == "across" else (start, i, direction, len(piece)))
+                start += len(piece) + 1
+    found.sort(key=lambda run: (run[0], run[1], run[2] == "down"))
+    return [(direction, r, c, length) for r, c, direction, length in found]
+
+
+def true_numbers(rows):
+    """The correct number of each run: its entry's clue number, 0 for a single cell."""
+    truth = true_entries(rows)
+    return [truth[(d, r, c)][0] if length >= 2 else 0 for d, r, c, length in all_runs(rows)]
+
+
+def label(run):
+    direction, r, c, length = run
+    return f"{direction} run at row {r}, col {c} (length {length})"
 
 
 def save_path(task):
@@ -98,21 +122,15 @@ def verify_grid_input(value):
     return result(False, problem) if problem else result(True, "input is valid")
 
 
-def verify_save_input(value):
+def verify_numbers_input(value):
     problem = seed_problem(value.task)
     if problem:
         return result(False, problem)
-    n = int(value.task.size.value.split("x")[0])
-    for e in value.entries:
-        if e.direction is not value.direction:
-            return result(False, f"entry {e.number} is {e.direction.value}; this call saves {value.direction.value} entries")
-        if not (0 <= e.row < n and 0 <= e.col < n):
-            return result(False, f"entry {e.number} starts outside the {n}x{n} grid")
-        if e.length < 2 or e.number < 1:
-            return result(False, f"entry {e.number}: a number is at least 1 and a length at least 2")
-    _, twice = keyed(value.entries)
-    if twice:
-        return result(False, f"{label(twice[0])} is given twice")
+    count = len(all_runs(rebuild_rows(value.task)))
+    if value.start < 0 or not 1 <= len(value.numbers) <= BATCH or value.start + len(value.numbers) > count:
+        return result(False, f"a batch numbers 1 to {BATCH} runs, from start, within the grid's {count} runs")
+    if any(n < 0 for n in value.numbers):
+        return result(False, "a number is 0 (no entry) or a clue number from 1")
     return result(True, "input is valid")
 
 
@@ -123,11 +141,15 @@ def verify_get_output(task, output):
         return result(False, "the grid is not the one the seed gives")
     if output.black_cells != sum(row.count("#") for row in rows):
         return result(False, "black_cells does not count the black cells")
+    given = [(run.direction.value, run.row, run.col, run.length) for run in output.runs]
+    expected = all_runs(rows)
+    if given != expected[:BATCH] or output.total_runs != len(expected):
+        return result(False, "runs is not the first batch of the grid's white runs, in reading order")
     return result(True, "the grid is the seed's")
 
 
 def read_saved(task, workspace):
-    """The saved numbering's (across, down) entries as plain dicts, or a problem."""
+    """The saved numbers, or a problem."""
     path = Path(workspace) / save_path(task)
     if not path.is_file():
         return None, f"{save_path(task)} was never saved"
@@ -135,76 +157,67 @@ def read_saved(task, workspace):
         saved = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return None, f"{save_path(task)} is not valid JSON"
-    if not isinstance(saved, dict) or "across" not in saved or "down" not in saved:
-        return None, f"{save_path(task)} does not hold both the across and the down entries"
-    return saved, None
+    if not isinstance(saved, dict) or not isinstance(saved.get("numbers"), list):
+        return None, f"{save_path(task)} holds no numbers"
+    return saved["numbers"], None
 
 
-def plain_keys(items):
-    table = {}
-    for item in items:
-        table[(item["direction"], item["row"], item["col"])] = (item["number"], item["length"])
-    return table
-
-
-def verify_save_output(save, output, workspace):
-    path = Path(workspace) / save_path(save.task)
-    if output.file != save_path(save.task) or not path.is_file():
-        return result(False, f"{save_path(save.task)} was not written")
-    on_disk = json.loads(path.read_text(encoding="utf-8"))
-    if output.complete != ("across" in on_disk and "down" in on_disk):
-        return result(False, "complete does not say whether both directions are saved")
-    returned, _ = keyed(output.entries)
-    if plain_keys(on_disk.get("across", []) + on_disk.get("down", [])) != returned:
-        return result(False, "the returned entries are not the ones saved on disk")
-    return result(True, "the entries are saved", across=output.across, down=output.down)
+def verify_numbers_output(given, output, workspace):
+    saved, problem = read_saved(given.task, workspace)
+    if problem:
+        return result(False, problem)
+    count = len(all_runs(rebuild_rows(given.task)))
+    if output.file != save_path(given.task) or saved != output.numbers or saved[given.start :] != list(given.numbers):
+        return result(False, "the saved numbers are not the ones given")
+    if (output.runs, output.next_start, output.complete, output.last_number) != (count, len(saved), len(saved) == count, max(saved, default=0)):
+        return result(False, "runs, next_start, complete or last_number does not describe the saved numbers")
+    following = [(run.direction.value, run.row, run.col, run.length) for run in output.next_runs]
+    if following != all_runs(rebuild_rows(given.task))[len(saved) : len(saved) + BATCH]:
+        return result(False, "next_runs is not the next batch of runs")
+    return result(True, "the numbers are saved", saved=len(saved))
 
 
 def verify_pin_output(task, output):
     rows = rebuild_rows(task)
     if output.rows != rows or output.grid_sha256 != canonical_sha256(rows):
         return result(False, "the pinned grid is not the seed's")
-    pinned, _ = keyed(output.entries)
-    if pinned != true_entries(rows):
+    if output.numbers != true_numbers(rows) or keyed(output.entries)[0] != true_entries(rows):
         return result(False, "the pinned numbering disagrees with the verifier's own")
-    return result(True, "the answer key is the grid's numbering", entries=len(pinned))
+    return result(True, "the answer key is the grid's numbering", entries=len(output.entries))
 
 
 def verify_task(arguments, output, reference, workspace):
     rows = rebuild_rows(arguments)
-    truth = true_entries(rows)
-    if reference is None or reference.grid_sha256 != canonical_sha256(rows) or keyed(reference.entries)[0] != truth:
+    if reference is None or verify_pin_output(arguments, reference)["valid"] is not True:
         return result(False, "the pinned answer key does not match the grid the seed gives")
-    submitted, twice = keyed(output.entries)
-    missing = sorted(key for key in truth if key not in submitted)
-    extra = sorted(key for key in submitted if key not in truth)
-    wrong_number = sorted(k for k in submitted if k in truth and submitted[k][0] != truth[k][0])
-    wrong_length = sorted(k for k in submitted if k in truth and submitted[k][1] != truth[k][1])
-    correct = sum(1 for k in submitted if submitted.get(k) == truth.get(k))
-    score = correct / max(len(truth), len(output.entries), 1)
+    runs_list = all_runs(rows)
+    truth = true_numbers(rows)
+    given = list(output.numbers)
+    problems, wrong = [], []
+    if len(given) != len(truth):
+        problems.append(f"{len(given)} numbers for {len(truth)} runs")
+    for index, (run, expected) in enumerate(zip(runs_list, truth)):
+        got = given[index] if index < len(given) else None
+        if got != expected:
+            wrong.append(f"{label(run)}: {got if got is not None else 'missing'}, expected {expected}")
+    correct = sum(1 for index, expected in enumerate(truth) if index < len(given) and given[index] == expected)
+    score = correct / max(len(truth), len(given), 1)
     saved, file_problem = read_saved(arguments, workspace)
-    if saved is not None and plain_keys(saved["across"] + saved["down"]) != submitted:
-        file_problem = f"{save_path(arguments)} does not hold the submitted entries"
-    problems = []
-    for name, keys in (("missing", missing), ("extra", extra), ("wrong number", wrong_number), ("wrong length", wrong_length), ("given twice", twice)):
-        if keys:
-            problems.append(f"{name}: " + "; ".join(label(k) for k in keys[:5]) + (" ..." if len(keys) > 5 else ""))
+    if saved is not None and saved != given:
+        file_problem = f"{save_path(arguments)} does not hold the submitted numbers"
+    if wrong:
+        problems.append(f"{len(wrong)} run(s) numbered wrong: " + "; ".join(wrong[:4]) + (" ..." if len(wrong) > 4 else ""))
     if file_problem:
         problems.append(file_problem)
         # The saved file is the run's actual result: an answer that was not saved earns half at most.
         score = min(score, 0.5)
     details = {
-        "entries_expected": len(truth),
-        "entries_submitted": len(output.entries),
-        "entries_correct": correct,
-        "missing": [label(k) for k in missing],
-        "extra": [label(k) for k in extra],
-        "wrong_number": [f"{label(k)}: {submitted[k][0]}, expected {truth[k][0]}" for k in wrong_number],
-        "wrong_length": [f"{label(k)}: {submitted[k][1]}, expected {truth[k][1]}" for k in wrong_length],
-        "given_twice": [label(k) for k in twice],
+        "runs": len(truth),
+        "entries_expected": sum(1 for n in truth if n),
+        "runs_correct": correct,
+        "wrong": wrong,
         "saved_file": file_problem or "matches the submission",
     }
     if problems:
         return result(False, "; ".join(problems), score=score, **details)
-    return result(True, f"all {len(truth)} entries are numbered correctly and saved", **details)
-
+    return result(True, f"all {len(truth)} runs are numbered correctly ({details['entries_expected']} entries) and saved", **details)

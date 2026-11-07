@@ -13,13 +13,13 @@ from mcp.server.stdio import stdio_server
 from slimconfig import build_output, output_schema, plain_output
 
 from contract import TOOLS, Tool
-from plugin import get_grid, pin_numbering, save_entries
+from plugin import get_grid, pin_numbering, save_numbers
 
 server = Server("crossword-grid-numbering")
 # NanoAgent names the one folder this plugin may write to.
 WORKSPACE_ENV = "NANOAGENT_WORKSPACE"
 # Each tool's implementation: (its input, the workspace) -> its output, as contract.TOOLS types them.
-IMPLEMENTATIONS = {Tool.GET_GRID: get_grid, Tool.SAVE_ENTRIES: save_entries, Tool.PIN_NUMBERING: pin_numbering}
+IMPLEMENTATIONS = {Tool.GET_GRID: get_grid, Tool.SAVE_NUMBERS: save_numbers, Tool.PIN_NUMBERING: pin_numbering}
 
 
 @server.list_tools()

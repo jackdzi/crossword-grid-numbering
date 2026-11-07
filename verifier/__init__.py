@@ -7,7 +7,7 @@ from . import grid
 # tool -> (verify_input(value), verify_output(input_value, output_value, workspace))
 TOOLS = {
     Tool.GET_GRID: (grid.verify_grid_input, lambda given, made, workspace: grid.verify_get_output(given, made)),
-    Tool.SAVE_ENTRIES: (grid.verify_save_input, grid.verify_save_output),
+    Tool.SAVE_NUMBERS: (grid.verify_numbers_input, grid.verify_numbers_output),
     Tool.PIN_NUMBERING: (grid.verify_grid_input, lambda given, made, workspace: grid.verify_pin_output(given, made)),
 }
 # task -> its output's check, verify_task(arguments, output, reference, workspace)

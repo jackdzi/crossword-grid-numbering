@@ -1,7 +1,7 @@
 _ > nanoagent.plugin.v0001.ManifestConfig:
 id: crossword-grid-numbering
 name: Crossword Grid Numbering
-version: 0.1.0
+version: 0.2.0
 status: ready
 spec: nanoagent.plugin/v0001
 
@@ -18,9 +18,9 @@ permissions > nanoagent.plugin.v0001.PermissionsConfig:
 # One entry per contract.Tool; its input and output classes are contract.TOOLS's.
 tools > dict[contract.Tool, nanoagent.plugin.v0001.ToolConfig]:
   get_grid:
-    description: Get the task's crossword grid, as its rows and its columns, with '.' for white cells and '#' for black ones
-  save_entries:
-    description: Save every across or every down entry of the numbering into the workspace, replacing that direction's earlier save, and return all entries saved so far
+    description: Get the task's crossword grid, as its rows and its columns ('.' white, '#' black), how many white runs it has, and the first batch of them, in reading order
+  save_numbers:
+    description: Save the numbers of one batch of up to 25 runs of get_grid's runs list (each run's clue number, or 0 for a single cell) into the workspace, and return every number saved so far, where the next batch starts, and the next batch of runs
   pin_numbering:
     description: Pin the grid and its correct numbering, the task's answer key
 
@@ -29,9 +29,9 @@ tasks > dict[contract.Task, nanoagent.plugin.v0001.TaskConfig]:
   number-grid:
     description: Number a crossword grid's across and down entries by the standard rule, and save them
     runner: agent
-    tools: [get_grid, save_entries]
+    tools: [get_grid, save_numbers]
     reference: pin_numbering
     instructions: |-
-      Rules. Rows and columns count from 0 at the top left. An across entry is a run of 2 or more white cells left to right, bounded by a black cell or the grid's edge on both sides; a down entry is the same top to bottom. A single white cell between black cells is no entry. Read the grid row by row, left to right: each white cell that starts an across entry or a down entry (or both) gets the next number, starting at 1. A cell that starts both an across and a down entry has one number, used by both entries. An entry's length is how many white cells it spans.
-      Plan. Exactly four tool calls: (1) get_grid with the task input copied exactly; (2) save_entries with direction across and every across entry; (3) save_entries with direction down and every down entry; (4) submit with the entries the last save_entries call returned, unchanged.
-      Method. Find the start cells first: a white cell starts an across entry when the cell to its left is black or off the grid and the cell to its right is white; it starts a down entry when the cell above is black or off the grid and the cell below is white. Number the start cells in reading order, then measure each entry's length along its row (across) or column (down): the columns list gives each column top to bottom. Keep your reasoning short: one line per row.
+      Rules. An entry is a run of 2 or more white cells, across or down; a run of 1 cell is no entry. Reading the grid row by row, left to right, each cell that starts at least one entry gets the next number, from 1. A cell that starts both an across and a down entry has one number, used by both.
+      Plan. One tool call per step: (1) get_grid with the task input copied exactly: it gives the first batch of runs; (2) save_numbers with start 0 and one number per run of that batch; (3) while complete is false, save_numbers with start = next_start and one number per run of next_runs; then submit with the numbers the last save_numbers call returned. A grid needs at most three batches.
+      Method. Never scan the grid yourself: the runs of each batch are given with their first cell and length, in reading order. Number only the batch in front of you, keeping last, the last number used (0 at the start; for a later batch, the last_number returned). For each run: if its length is 1, its number is 0. Otherwise, if the run just before it starts at the same cell and its number is above 0, it takes that same number. Otherwise last goes up by 1 and the run takes last. The rule has no exceptions: apply it without second-guessing, one short line per run, then call the tool.

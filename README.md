@@ -11,22 +11,30 @@ grid again with its own algorithm and checks every entry.
 
 | Tool | Does | Code |
 |---|---|---|
-| `get_grid` | The task's grid as rows and as columns (`.` white, `#` black), its size and its number of black cells | `src/plugin/grid.py` |
-| `save_entries` | Saves every across or every down entry into `crossword/<size>-<shape>-<seed>.json` in the workspace, replacing that direction's earlier save, and returns all entries saved so far | `src/plugin/grid.py` |
+| `get_grid` | The task's grid as rows and as columns (`.` white, `#` black), its size, its number of black cells and white runs, and the first batch of runs (at most 25): every maximal run of white cells, across and down, single cells included, in reading order | `src/plugin/grid.py` |
+| `save_numbers` | Saves the numbers of one batch of runs (each run's clue number, or 0 for a single cell) into `crossword/<size>-<shape>-<seed>.json` in the workspace, and returns every number saved so far, where the next batch starts and the next batch of runs | `src/plugin/grid.py` |
 | `pin_numbering` | The answer key: the grid, its sha256 and its correct numbering | `src/plugin/grid.py` |
 
 ### Tasks
 
 | Task | Does | Runner |
 |---|---|---|
-| `number-grid` | Numbers the grid's across and down entries, saves them, and submits them | `agent`, with `get_grid` and `save_entries`; reference `pin_numbering` |
+| `number-grid` | Numbers the grid's across and down entries, saves them, and submits them | `agent`, with `get_grid` and `save_numbers`; reference `pin_numbering` |
 
 ## The task
 
 Input: `seed` (0 to 1,000,000,000), `size` (`5x5`, `7x7`, `9x9` or `11x11`)
-and `symmetric`. The agent makes four tool calls: `get_grid`, `save_entries`
-for the across entries, `save_entries` for the down entries, and `submit`
-with the entries the last save returned.
+and `symmetric`. The agent calls `get_grid`, then `save_numbers` once per
+batch of at most 25 runs (one to three batches), then `submit` with every
+number saved. The answer is one number per white run: the run's clue number,
+or 0 for a single cell, which is no entry.
+
+The tool finds the runs; the agent applies the numbering rule to them. This
+split keeps each step within RUSH Lab's default limits (replies of at most
+2,048 tokens, reasoning included, and 6 steps): asked to scan a 9x9 grid
+itself, DeepSeek V4 Flash spent the whole reply reasoning and never answered.
+A grid has at most 74 runs, so at most three batches, and `submit` comes by
+the fifth step.
 
 The rule: reading row by row, a white cell that starts an across or a down
 run of 2 or more white cells gets the next number, from 1. A cell starting
@@ -45,15 +53,17 @@ no black cell, one an all-black row and one an all-black column.
    numbering.
 2. Numbers the grid its own way, by splitting each row and column on black
    cells, rather than the tool's cell-by-cell scan.
-3. Compares every submitted entry by its direction and first cell, and lists
-   each one missing, extra, given twice, or with a wrong number or length.
+3. Compares the number of every run, and names each run numbered wrong
+   (a single cell given a number, an entry given 0, a number off by one) and
+   any run missing or extra.
 4. Checks that the saved file in the workspace holds exactly the submitted
-   entries.
+   numbers.
 
-The verdict is valid only when every entry is right and saved; its score is
-the share of entries that are right. `verify_input` refuses a save with an
-entry of the other direction, outside the grid, of length below 2, or given
-twice.
+The verdict is valid only when every run is right and saved; its score is
+the share of runs that are right (at most 0.5 when the saved file does not
+match). `verify_input` refuses a batch that does not start where the last
+ended, has more than 25 numbers, runs past the grid, or has a negative
+number.
 
 ## Layout
 

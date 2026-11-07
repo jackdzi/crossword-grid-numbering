@@ -1,28 +1,22 @@
 """A scripted stand-in for the agent: it follows the task's instructions with no model, so a whole
-run can be replayed offline. It reads only what get_grid returns."""
+run can be replayed offline. It sees only the batch of runs each tool call returns."""
 
 from __future__ import annotations
 
 
-def numbering_from_grid(rows: list[str], columns: list[str]) -> tuple[list[dict], list[dict]]:
-    """The across and down entries, found the way the instructions describe."""
-    n = len(rows)
-
-    def white(r: int, c: int) -> bool:
-        return 0 <= r < n and 0 <= c < n and rows[r][c] == "."
-
-    across, down, number = [], [], 0
-    for r in range(n):
-        for c in range(n):
-            starts_across = white(r, c) and not white(r, c - 1) and white(r, c + 1)
-            starts_down = white(r, c) and not white(r - 1, c) and white(r + 1, c)
-            if not (starts_across or starts_down):
-                continue
-            number += 1
-            if starts_across:
-                length = len(rows[r][c:].split("#")[0])
-                across.append({"number": number, "direction": "across", "row": r, "col": c, "length": length})
-            if starts_down:
-                length = len(columns[c][r:].split("#")[0])
-                down.append({"number": number, "direction": "down", "row": r, "col": c, "length": length})
-    return across, down
+def number_batch(runs: list[dict], last: int, before: tuple[dict, int] | None = None) -> tuple[list[int], int]:
+    """The numbers of one batch of runs, and the last number used. ``before`` is the run just before
+    the batch, with its number (the end of the previous batch)."""
+    numbers = []
+    previous = before
+    for run in runs:
+        if run["length"] == 1:
+            number = 0
+        elif previous and (previous[0]["row"], previous[0]["col"]) == (run["row"], run["col"]) and previous[1] > 0:
+            number = previous[1]
+        else:
+            last += 1
+            number = last
+        numbers.append(number)
+        previous = (run, number)
+    return numbers, last
